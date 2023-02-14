@@ -1,1 +1,0 @@
-from .eegnet_pt import EEGNet
