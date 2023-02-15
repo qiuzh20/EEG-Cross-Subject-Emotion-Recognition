@@ -67,7 +67,7 @@ temp_dir = 'data/subject_'
 for i in range(80):
     subject_raw = mne.io.RawArray(multi_personal_data[i, :, :], info)
     # 预处理算法
-    raw_icaed = preprocessing(subject_raw, i, redo=True)
+    raw_icaed = preprocessing(subject_raw, i, redo=False)
     df = raw_icaed.to_data_frame()
     for j in range(28):
         # 要检查时间列，把下一行末尾由1：改为0：
