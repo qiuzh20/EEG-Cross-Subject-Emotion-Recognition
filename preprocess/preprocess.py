@@ -79,6 +79,6 @@ y_total = np.array((
 ))
 
 np.save('X_total', X_total)
-np.save('y_toral', y_total.repeat(80, axis=0))
+np.save('y_total', y_total.repeat(80, axis=0))
 
 
