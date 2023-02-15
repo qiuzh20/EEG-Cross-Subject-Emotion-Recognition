@@ -24,7 +24,6 @@ def fix_seed(seed=0):
     torch.backends.cudnn.benchmark = False
 
 
-
 def contrastive_loss(test_feature, pos_ref, neg_ref):
     # 计算 contrastive loss
     # 为了方便余弦相似度计算，首先将每一个 feature 标准化，然后整理成方便矩阵乘法的形式

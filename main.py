@@ -1,7 +1,7 @@
 import torch
 import torch.optim as optim
 from torch.nn import functional as F
-from model import EEGNet, EEGNet2D
+from model import EEGNet, EEGNetv2, EEGNet2D
 from dataset import Onesec_Dataset, Contrastive_Dataset
 import random
 
@@ -38,10 +38,10 @@ def train(trainloader, epoch, net, optimizer, logger, args, device='cpu'):
         # inputs, targets = inputs.to(device), targets.to(device)
         # targets = targets.to(device)
         if args.total_shuffle:
-            if args.model == 'EEG1D':
-                inputs = inputs.transpose(1,2)
-            else:
+            if args.model == 'EEG2D':
                 inputs = inputs.unsqueeze(1)
+            else:
+                inputs = inputs.transpose(1,2)    
             outputs = net(inputs)
             loss = F.cross_entropy(outputs, targets) #/ grad_acc
             loss.backward()
@@ -56,10 +56,10 @@ def train(trainloader, epoch, net, optimizer, logger, args, device='cpu'):
         else:
             for i in range(30):
                 temp_inputs = inputs[:, i*125:(i+1)*125]
-                if args.model == 'EEG1D':
-                    temp_inputs = temp_inputs.transpose(1,2)
-                else:
+                if args.model == 'EEG2D':
                     temp_inputs = temp_inputs.unsqueeze(1)
+                else:
+                    temp_inputs = temp_inputs.transpose(1,2)
                 outputs = net(temp_inputs)
                 loss = F.cross_entropy(outputs, targets) #/ grad_acc
                 loss.backward()
@@ -75,9 +75,9 @@ def train(trainloader, epoch, net, optimizer, logger, args, device='cpu'):
         steps += 1
         train_acc = 100.*correct/total
         # 记录
+        logger.log('train/loss', total_loss/30, steps)
+        logger.log('train/acc', train_acc, steps)
         if steps % 10 == 0:
-            logger.log('train/loss', total_loss/30, steps)
-            logger.log('train/acc', train_acc, steps)
             pbar.set_description(f"epoch {epoch+1} iter {steps}: train loss {loss.item():.5f}, acc {train_acc:.3}")
         
 
@@ -91,7 +91,7 @@ def contrastive_train(trainloader, epoch, net, optimizer, logger, args, device='
     steps = epoch * total_len
     for batch_idx, batch in pbar:
         # batch = (batch[0].to(device), batch[1].to(device), batch[2].to(device))
-        if args.model == 'EEG1D':
+        if args.model == 'EEG1D' or args.model == 'EEG1Dv2':
             # 使用1D组合卷积的情况
             bs, trials = batch[2].shape[0], batch[2].shape[1]
             # print(batch[0].shape, batch[1].shape, batch[2].shape) 
@@ -141,9 +141,8 @@ def test(testloader, epoch, net, logger, args, device='cpu'):
     with torch.no_grad():
         for batch_idx, (inputs, targets) in enumerate(testloader):
             inputs, targets = inputs.to(device), targets.to(device)
-            # 依次检测30s的正确率
             if args.total_shuffle:
-                if args.model == 'EEG1D':
+                if args.model == 'EEG1D' or args.model == 'EEG1Dv2':
                     inputs = inputs.transpose(1,2)
                 else:
                     inputs = inputs.unsqueeze(1)
@@ -152,10 +151,11 @@ def test(testloader, epoch, net, logger, args, device='cpu'):
                 test_loss += loss.item()
                 predicted = torch.argmax(outputs, dim=-1)
                 total += targets.size(0)
-                correct += predicted.eq(targets).sum().sum().item()
+                correct += predicted.eq(targets).sum().item()
             else:
+            # 依次检测30s的正确率
                 for i in range(30):
-                    if args.model == 'EEG1D':
+                    if args.model == 'EEG1D' or args.model == 'EEG1Dv2':
                         temp_inputs = inputs[:, i*125:(i+1)*125].transpose(1,2)
                     else:
                         temp_inputs = inputs[:, i*125:(i+1)*125].unsqueeze(1)
@@ -179,36 +179,42 @@ def test(testloader, epoch, net, logger, args, device='cpu'):
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
+    # 预处理过的数据路径
     parser.add_argument('--data_dir', type=str, default='./data.pth')
-    # training parameter
+    # 基础 training parameter
     parser.add_argument("--seed", default=0, type=int)              # Sets PyTorch and Numpy seeds
     parser.add_argument("--save_model", default=False, action="store_true")        # Save model and optimizer parameters
     parser.add_argument('--lr', type=float, default=0.0005, help='initial learning rate')
     parser.add_argument('--epochs', type=int, default=100, help='upper epoch limit')
     parser.add_argument('--batch_size', type=int, default=128, metavar='N',help='batch size')
     parser.add_argument('--num_workers', type=int, default=0)
-
+    parser.add_argument('--drop_out', type=float, default=0, help='initial learning rate')
+    parser.add_argument('--weight_decay', default=0, type=float)
+    parser.add_argument("--batch_norm",  default=False, action="store_true")
+    
+    # contrastive training parameter
     parser.add_argument("--contrastive_training",  default=False, action="store_true")
     parser.add_argument('--sample_interval', type=int, default=5)
     parser.add_argument('--neg_number', type=int, default=10)
 
-    parser.add_argument("--normalize",  default=False, action="store_true")
-    parser.add_argument('--drop_out', type=float, default=0, help='initial learning rate')
+    # 数据处理
+    parser.add_argument("--normalize",  default=False, action="store_true", help='将一段数据归一化处理')
+    parser.add_argument("--delete_bad",  default=False, action="store_true", help='删除预处理过程中发现的问题数据')
     
+    # additional test
     parser.add_argument("--random_label_test",  default=False, action="store_true")
-    
     parser.add_argument("--total_shuffle",  default=False, action="store_true")
 
-    parser.add_argument('--weight_decay', default=0, type=float)
+    # 储存模型的选择
     parser.add_argument('--save_freq', type=int, default=50)
-    
     parser.add_argument('--ckpt_path', type=str, default=None)
-    # model type
-    parser.add_argument('--model', type=str, default='EEG1D',help='type of EEGNet')
+    
+    # model 选择
+    parser.add_argument('--model', type=str, default='EEG1D',help='type of EEGNet', choices=('EEG1D', 'EEG1Dv2', 'EEG2D'))
+    
     # EEG1D 网络使用参数
     parser.add_argument('--F1', type=int, default=16)
     parser.add_argument('--D', type=int, default=4)
-    # EEG2D 网络使用参数
     
     # Work dir
     parser.add_argument('--notes', default=None, type=str) # additional experiment name
@@ -230,7 +236,7 @@ if __name__ == "__main__":
 
     ts = time.gmtime()
     ts = time.strftime("%m-%d-%H:%M", ts)
-    exp_name = f'dropout{args.drop_out}-weight_decay{args.weight_decay}' + f'norm{args.normalize}' + 'bs' + str(args.batch_size) + '-s' + str(args.seed)
+    exp_name = f'dropout{args.drop_out}-weight_decay{args.weight_decay}' + f'-norm{args.normalize}_batch_norm{args.batch_norm}-' + 'bs' + str(args.batch_size) + '-s' + str(args.seed)
     if args.model == 'EEG1D':
         exp_name = f'F1{args.F1}-D{args.D}' + exp_name
     if args.contrastive_training:
@@ -241,6 +247,8 @@ if __name__ == "__main__":
         exp_name = 'random_label_test' + exp_name
     if args.total_shuffle:
         exp_name = 'total_shuffle' + exp_name
+    if args.delete_bad:
+        exp_name = 'delete_bad' + exp_name
 
     exp_name += '-' + ts
     args.work_dir = args.work_dir + '/' + exp_name
@@ -254,19 +262,24 @@ if __name__ == "__main__":
     with open(os.path.join(args.work_dir, 'args.json'), 'w') as f:
         json.dump(vars(args), f, sort_keys=True, indent=4)
     
+    # 读取总的数据
     raw_data = torch.load(args.data_dir)
     X_total, y_total = raw_data['X'], raw_data['y']
     
-    # train_X, train_y = X_total[:70], y_total[:70]
-    # test_X, test_y = X_total[70:], y_total[:70]
+    # 删除预处理时发现的问题个体，最异常的是15号和21号
+    if args.delete_bad:
+        total_index = torch.tensor(list(range(X_total.shape[0])))
+        # 手动删除15号和21号
+        used_index = (total_index != 15) & (total_index != 21)
+        X_total = X_total[used_index]
+        y_total = y_total[used_index]
     
-    # train_dataset = Onesec_Dataset(data=train_X.reshape(70*28, 3750, 32), label=train_y.reshape(70*28, 1))
-    # train_dataset = Onesec_Dataset(data=test_X.reshape(10*28, 3750, 32), label=test_y.reshape(10*28, 1))
-
     if args.model == 'EEG1D':
-        model = EEGNet(nb_classes=9, Chans=32, Samples=125, F1=args.F1, D=args.D, dropoutRate=args.drop_out)
+        model = EEGNet(nb_classes=9, Chans=32, Samples=125, F1=args.F1, D=args.D, dropoutRate=args.drop_out, batch_norm=args.batch_norm)
+    elif args.model == 'EEG1Dv2':
+        model = EEGNetv2(nb_classes=9, Chans=32, Samples=125, F1=args.F1, D=args.D, dropoutRate=args.drop_out, batch_norm=args.batch_norm)
     else:
-        model = EEGNet2D(nb_classes=9, dropout=args.drop_out)
+        model = EEGNet2D(nb_classes=9, dropout=args.drop_out, batch_norm=args.batch_norm)
         
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -274,17 +287,18 @@ if __name__ == "__main__":
     if args.ckpt_path is not None:
         print("loading %s", args.ckpt_path)
         model.load_state_dict(torch.load(args.ckpt_path))
+        print("finish loading")
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
+    # 记录模型参数量
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print("Model Built with Total Number of Trainable Parameters: " + str(total_params)) 
-
     with open(os.path.join(args.work_dir, 'total_param_{}.txt'.format(total_params)), 'w') as f:
         pass
 
+    # 初始化logger
     logger = utils.Logger(args.work_dir, use_tb=True)
-    
     
     
     if args.contrastive_training:
@@ -301,15 +315,15 @@ if __name__ == "__main__":
         best_acc = 0.1
         if args.random_label_test:
             random.shuffle(y_total)
-        train_X, train_y = X_total[:70], y_total[:70]
-        test_X, test_y = X_total[70:], y_total[70:]
+        train_X, train_y = X_total[:-10], y_total[:-10]
+        test_X, test_y = X_total[-10:], y_total[-10:]
         
         if args.total_shuffle: # 整体打乱处理
-            train_dataset = Onesec_Dataset(data=train_X.reshape(70*28*30, 125, 32), label=train_y.repeat_interleave(30, 1).reshape(70*28*30,), channel_wise_normalize=args.normalize, device=device)
-            test_dataset = Onesec_Dataset(data=test_X.reshape(10*28*30, 125, 32), label=test_y.repeat_interleave(30, 1).reshape(10*28*30,), channel_wise_normalize=args.normalize, device=device)
+            train_dataset = Onesec_Dataset(data=train_X.reshape(train_X.shape[0]*28*30, 125, 32), label=train_y.repeat_interleave(30, 1).reshape(train_y.shape[0]*28*30,), channel_wise_normalize=args.normalize, device=device)
+            test_dataset = Onesec_Dataset(data=test_X.reshape(test_X.shape[0]*28*30, 125, 32), label=test_y.repeat_interleave(30, 1).reshape(test_y.shape[0]*28*30,), channel_wise_normalize=args.normalize, device=device)
         else: # 最初发现将30s长的片段整体输入会导致训练loss出现周期波折，担心模型学习到错误的信号
-            train_dataset = Onesec_Dataset(data=train_X.reshape(70*28, 125*30, 32), label=train_y.reshape(70*28,), channel_wise_normalize=args.normalize, device=device)
-            test_dataset = Onesec_Dataset(data=test_X.reshape(10*28, 125*30, 32), label=test_y.reshape(10*28,), channel_wise_normalize=args.normalize, device=device)
+            train_dataset = Onesec_Dataset(data=train_X.reshape(train_X.shape[0]*28, 125*30, 32), label=train_y.reshape(train_y.shape[0]*28,), channel_wise_normalize=args.normalize, device=device)
+            test_dataset = Onesec_Dataset(data=test_X.reshape(test_X.shape[0]*28, 125*30, 32), label=test_y.reshape(test_y.shape[0]*28,), channel_wise_normalize=args.normalize, device=device)
             # train_dataset, test_dataset = random_split(dataset=dataset, lengths=[70*28*30, 10*28*30]) 早期采用了直接随机拆分，但是这样会让训练和侧视数据中出现相同的测试被试
         train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True)
         test_loader = DataLoader(test_dataset, batch_size=32)
